@@ -2,12 +2,11 @@ from math.math import abs, min, max, trunc, round, align_up
 from algorithm.sort import sort
 from string_dict import Dict as CompactDict
 from algorithm import parallelize
-from algorithm.functional import sync_parallelize
 from os import SEEK_CUR
 import os.fstat
 import sys
 
-alias input_file = "measurements_1B.txt"
+alias input_file = "measurements.txt"
 # alias input_file = "small_measurements.txt"
 
 alias cores = 32
@@ -121,6 +120,8 @@ fn process_line(line: StringRef, inout aggregator: CompactDict[Measurement]):
     measurement.sum += int(value)
     measurement.count += 1
     aggregator.put(name, measurement)
+
+
 
 
 @always_inline
