@@ -1,4 +1,4 @@
-from math.math import abs, min, max, trunc, round, align_up
+from math import trunc
 from algorithm.sort import sort
 from string_dict import Dict as CompactDict
 from algorithm import parallelize
@@ -6,25 +6,27 @@ from algorithm.functional import sync_parallelize
 from os import SEEK_CUR
 import os.fstat
 import sys
+from utils import Variant, InlineArray
+from memory import memset
 
 alias input_file = "measurements_1B.txt"
 # alias input_file = "small_measurements.txt"
-
+alias HCAP = 4096
 alias cores = 32
+alias MorN = Variant[Measurement, NoneType]
 
 @value
-struct Measurement(Stringable):
+struct Measurement(CollectionElement, Stringable):
     var name: String
     var min: Int16
     var max: Int16
     var sum: Int
     var count: Int
 
-    fn __add__(inout self, other: Self) raises -> Self:
+    fn __add__(inout self, other: Self) -> Self:
 
-        if self.name != other.name:
-            raise Error("Measurements are not the same")
-
+        # if self.name != other.name:
+        #     raise Error("Measurements are not the same")
         var new = Measurement(
             name = self.name,
             min = min(self.min, other.min),
@@ -113,18 +115,55 @@ fn process_line(line: StringRef, inout aggregator: CompactDict[Measurement]):
     var value = raw_to_float(raw_value)
 
     # Maybe can be streamlined?
-    var measurement = aggregator.get(
-        name, default=Measurement(name, value, value, 0, 0)
-    )
+    # var measurement = aggregator.get(
+    #     name, default=Measurement(name, value, value, 0, 0)
+    # )
+    var measurement = Measurement(name, value, value, 0, 0)
     measurement.min = min(measurement.min, value)
     measurement.max = max(measurement.max, value)
     measurement.sum += int(value)
     measurement.count += 1
-    aggregator.put(name, measurement)
+    # aggregator.put(name, measurement)
+
+
+fn process_line2(line: StringRef, inout aggregator: UnsafePointer[MorN]):
+    var hash: UInt64 = 0
+    var pos: Int = -1
+    for i in range(len(line)):
+        if line[i] != ";":
+            hash = hash * 31 + int(line[i]._as_ptr().load())
+        else:
+            pos = i
+    hash = hash & (HCAP - 1)
+
+    var name = StringRef(line._as_ptr(), pos+1)
+    var raw_value = StringRef(line._as_ptr() + pos + 1, len(line) - len(name))
+    var value = raw_to_float(raw_value)
+    var x = aggregator[int(hash)]
+    var measurement = Measurement(name, value, value, int(value),1)
+    if x.isa[NoneType]():
+        aggregator[int(hash)] = measurement
+    else:
+        var m1 = aggregator[int(hash)].get[Measurement]()[]
+        aggregator[int(hash)] =  m1 + measurement
+
+
+    # if key == 0:
+    #     measurement = Measurement(name, value, value, 0,0)
+    # else:
+    #     measurement =  aggregator.values[key - 1]
+    
+
+    # Maybe can be streamlined?
+    #  measurement = aggregator.get(
+    #     name, default=Measurement(name, value, value, 0, 0)
+    # )
+    # aggregator.put(name, measurement)
+
 
 
 @always_inline
-fn worker(chunk: StringRef, inout aggregator: CompactDict[Measurement]):
+fn worker(chunk: StringRef, inout aggregator: UnsafePointer[MorN]):
     var p = chunk.data
     var head = 0
     var max = int(chunk.data.address + chunk.length)
@@ -138,11 +177,11 @@ fn worker(chunk: StringRef, inout aggregator: CompactDict[Measurement]):
             break
 
         var line = StringRef(p + head, line_loc - head)
-        process_line(line, aggregator)
+        process_line2(line, aggregator)
         head = line_loc + 1
 
 @always_inline
-fn parallelizer[workers: Int](chunk: StringRef, inout aggr_list: List[CompactDict[Measurement]]) -> Int:
+fn parallelizer[workers: Int](chunk: StringRef, inout aggr_list: List[UnsafePointer[MorN]]) -> Int:
     var indcies = tagger[workers](chunk)
     @parameter
     fn inner(index: Int):
@@ -164,11 +203,16 @@ fn main() raises:
     var size =  stat.st_size 
 
     var loops = size // MAX_CHUNK
+    
+    var x = UnsafePointer[MorN]().alloc(HCAP)
 
-    var aggr_list = List[CompactDict[Measurement]]()
+    var aggr_list = List[UnsafePointer[MorN]]()
+
     for i in range(cores):
-        aggr_list.append(CompactDict[Measurement](capacity = 2000))
-
+        var x = UnsafePointer[MorN].alloc(HCAP)
+        for i in range(HCAP):
+            x[i] = None
+        aggr_list.append(x)
 
     var buf = DTypePointer[DType.int8]().alloc(MAX_CHUNK)
     var pos: UInt64 = 0
@@ -179,32 +223,32 @@ fn main() raises:
         pos = f.seek(aggregators - MAX_CHUNK, 1)
     buf.free()
 
-    # Handling last chunk
+    # # Handling last chunk
     var rem = int(size - pos)
     buf = DTypePointer[DType.int8]().alloc(int(rem))
     var chunk = f.read(buf, size = rem)
     var ref = StringRef(buf, rem)
     var aggregators = parallelizer[workers = cores](ref, aggr_list)
 
-    var master_dict = CompactDict[Measurement](capacity = 2000)
-    for i in range(len(aggr_list)):
-        var dic = aggr_list[i]
-        for j in range(dic.count):
-            var meas = dic.values[j]
-            var val = master_dict.get(meas.name, default = Measurement(meas.name, 0,0,0,0))
-            meas = meas + val
-            master_dict.put(meas.name, meas)
+    # var master_dict = CompactDict[Measurement](capacity = 2000)
+    # for i in range(len(aggr_list)):
+    #     var dic = aggr_list[i]
+    #     for j in range(dic.count):
+    #         var meas = dic.values[j]
+    #         var val = master_dict.get(meas.name, default = Measurement(meas.name, 0,0,0,0))
+    #         meas = meas + val
+    #         master_dict.put(meas.name, meas)
 
-    var names = List[String]()
-    for m in master_dict.values:
-        names.append(m[].name)
+    # var names = List[String]()
+    # for m in master_dict.values:
+    #     names.append(m[].name)
 
-    var res: String = "{"
-    for name in names:
-        var measurement = master_dict.get(name[], default=Measurement(name[], 0, 0, 0, 0))
-        res += measurement.name + "=" + format_int(int(measurement.min)) + "/" + format_float((measurement.sum / measurement.count) / 10) + "/" + format_int(int(measurement.max)) + ", "
-    res += "}"
-    print(res)
+    # var res: String = "{"
+    # for name in names:
+    #     var measurement = master_dict.get(name[], default=Measurement(name[], 0, 0, 0, 0))
+    #     res += measurement.name + "=" + format_int(int(measurement.min)) + "/" + format_float((measurement.sum / measurement.count) / 10) + "/" + format_int(int(measurement.max)) + ", "
+    # res += "}"
+    # print(res)
 
 
 

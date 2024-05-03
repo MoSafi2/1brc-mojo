@@ -259,6 +259,33 @@ struct Dict[
             
             key_map_index = (key_map_index + 1) & modulo_mask
 
+    
+    @always_inline
+    fn _find_key_index(self, key: Int32) -> Int:
+        var key_hash = hash(key).cast[KeyCountType]()
+        var modulo_mask = self.capacity - 1
+
+        var key_map_index = int(key_hash & modulo_mask)
+        while True:
+            var key_index = int(self.key_map.load(key_map_index))
+            if key_index == 0:
+                return key_index
+            
+            @parameter
+            if caching_hashes:
+                var other_key_hash = self.key_hashes[key_map_index]
+                if key_hash == other_key_hash:
+                    var other_key = self.keys[key_index - 1]
+                    if eq(other_key, key):
+                        return key_index
+            else:
+                var other_key = self.keys[key_index - 1]
+                if eq(other_key, key):
+                    return key_index
+            
+            key_map_index = (key_map_index + 1) & modulo_mask
+
+
     fn debug(self):
         print("Dict count:", self.count, "and capacity:", self.capacity)
         print("KeyMap:")
