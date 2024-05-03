@@ -9,9 +9,9 @@ import sys
 from utils import Variant, InlineArray
 from memory import memset
 
-alias input_file = "measurements_1B.txt"
+alias input_file = "measurements_100M_C.txt"
 # alias input_file = "small_measurements.txt"
-alias HCAP = 4096
+alias HCAP = 4096 * 10
 alias cores = 32
 alias MorN = Variant[Measurement, NoneType]
 
@@ -23,10 +23,10 @@ struct Measurement(CollectionElement, Stringable):
     var sum: Int
     var count: Int
 
-    fn __add__(inout self, other: Self) -> Self:
+    fn __add__(inout self, other: Self) raises -> Self :
 
-        # if self.name != other.name:
-        #     raise Error("Measurements are not the same")
+        if self.name != other.name:
+            raise Error("Measurements are not the same")
         var new = Measurement(
             name = self.name,
             min = min(self.min, other.min),
@@ -139,14 +139,24 @@ fn process_line2(line: StringRef, inout aggregator: UnsafePointer[MorN]):
     var name = StringRef(line._as_ptr(), pos+1)
     var raw_value = StringRef(line._as_ptr() + pos + 1, len(line) - len(name))
     var value = raw_to_float(raw_value)
-    var x = aggregator[int(hash)]
-    var measurement = Measurement(name, value, value, int(value),1)
-    if x.isa[NoneType]():
-        aggregator[int(hash)] = measurement
-    else:
-        var m1 = aggregator[int(hash)].get[Measurement]()[]
-        aggregator[int(hash)] =  m1 + measurement
+    var measurement = Measurement(name, value, value, int(value), 1)
 
+    while True:
+        var x = aggregator[int(hash)]
+        if x.isa[NoneType]():
+            aggregator[int(hash)] = measurement
+            break
+        if aggregator[int(hash)].get[Measurement]()[].name == name:
+            var m1 = aggregator[int(hash)].get[Measurement]()[]
+            try:
+                aggregator[int(hash)] =  m1 + measurement
+                break
+            except Error:
+                print(Error, m1.name, measurement.name)
+                break
+        else:
+            hash =(hash + 1) & (HCAP - 1)
+            
 
     # if key == 0:
     #     measurement = Measurement(name, value, value, 0,0)
